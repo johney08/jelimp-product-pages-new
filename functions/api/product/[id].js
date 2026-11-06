@@ -1,102 +1,141 @@
-export async function onRequest({ request, env, params }) {
-  const id = params.id;
 
-  const headers = {
-    "Content-Type": "text/html; charset=UTF-8",
-    "Cache-Control": "public, max-age=60"
-  };
+export async function onRequest(context) {
+  const { request, env } = context;
 
-  if (!id || !/^\d+$/.test(id)) {
-    return new Response("Invalid product ID", {
-      status: 400,
-      headers
-    });
+  const supabaseUrl = env.SUPABASE_URL;
+  const supabaseKey = env.SUPABASE_ANON_KEY;
+
+  if (!supabaseUrl || !supabaseKey) {
+    return new Response(
+      "Website configuration is incomplete. Check the Supabase variables in Cloudflare.",
+      { status: 500 }
+    );
   }
 
-  if (!env.SUPABASE_URL || !env.SUPABASE_ANON_KEY) {
-    return new Response("Website configuration is incomplete.", {
-      status: 500,
-      headers
-    });
+  const id = new URL(request.url).pathname.split("/").pop();
+
+  if (!/^\d+$/.test(id || "")) {
+    return new Response("Invalid product ID.", { status: 400 });
   }
 
-  const apiUrl =
-    `${env.SUPABASE_URL}/rest/v1/product` +
-    `?id=eq.${id}&select=name,price,description,category,location,image_url,media_type,seller_name&limit=1`;
+  try {
+    const apiUrl = new URL(
+      `${supabaseUrl.replace(/\/$/, "")}/rest/v1/product`
+    );
 
-  const result = await fetch(apiUrl, {
-    headers: {
-      apikey: env.SUPABASE_ANON_KEY,
-      Authorization: `Bearer ${env.SUPABASE_ANON_KEY}`
+    apiUrl.searchParams.set("id", `eq.${id}`);
+    apiUrl.searchParams.set(
+      "select",
+      "name,price,description,category,location,image_url,media_type,seller_name"
+    );
+
+    const response = await fetch(apiUrl.toString(), {
+      method: "GET",
+      headers: {
+        apikey: supabaseKey,
+        Accept: "application/json"
+      }
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+
+      return new Response(
+        `Supabase request failed. HTTP ${response.status}: ${errorText.slice(0, 500)}`,
+        {
+          status: 502,
+          headers: { "Content-Type": "text/plain; charset=utf-8" }
+        }
+      );
     }
-  });
 
-  if (!result.ok) {
-    return new Response("Unable to load product.", {
-      status: 502,
-      headers
-    });
-  }
+    const products = await response.json();
+    const product = products[0];
 
-  const products = await result.json();
-  const product = products[0];
+    if (!product) {
+      return new Response("Product not found.", { status: 404 });
+    }
 
-  if (!product) {
-    return new Response("Product not found.", {
-      status: 404,
-      headers
-    });
-  }
+    const escapeHtml = (value) =>
+      String(value ?? "").replace(/[&<>"']/g, (character) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+      })[character]);
 
-  const escapeHTML = (value) =>
-    String(value ?? "").replace(/[&<>"']/g, (char) => ({
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#39;"
-    })[char]);
+    const title = escapeHtml(`${product.name} | JELIMp`);
+    const description = escapeHtml(
+      `${product.description || product.name} | ${product.location || "JELIMp Marketplace"}`
+    );
+    const image = escapeHtml(product.image_url || "");
+    const pageUrl = escapeHtml(request.url);
 
-  const name = escapeHTML(product.name);
-  const description = escapeHTML(product.description);
-  const price = escapeHTML(product.price);
-  const seller = escapeHTML(product.seller_name || "JELIMp Seller");
-  const image = product.image_url || "";
-  const pageUrl = new URL(request.url).href;
-  const safeImage = escapeHTML(image);
-
-  return new Response(`<!DOCTYPE html>
+    const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${name} | JELIMp</title>
-<meta name="description" content="${description}">
-<meta property="og:title" content="${name} | JELIMp">
-<meta property="og:description" content="${description}">
-<meta property="og:image" content="${safeImage}">
-<meta property="og:url" content="${escapeHTML(pageUrl)}">
-<meta property="og:type" content="website">
-<meta name="twitter:card" content="summary_large_image">
-<style>
-body{font-family:Arial,sans-serif;margin:0;background:#f3f6fb;color:#172b4d}
-main{max-width:600px;margin:30px auto;background:white;padding:20px;border-radius:14px}
-img{width:100%;max-height:420px;object-fit:contain;border-radius:10px}
-h1{color:#0756a5}
-.price{font-size:24px;font-weight:bold;color:#0756a5}
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${title}</title>
+
+  <meta name="description" content="${description}">
+
+  <meta property="og:type" content="product">
+  <meta property="og:title" content="${title}">
+  <meta property="og:description" content="${description}">
+  <meta property="og:url" content="${pageUrl}">
+  ${image ? `<meta property="og:image" content="${image}">` : ""}
+  <meta property="og:site_name" content="JELIMp">
+
+  <meta name="twitter:card" content="${image ? "summary_large_image" : "summary"}">
+  <meta name="twitter:title" content="${title}">
+  <meta name="twitter:description" content="${description}">
+  ${image ? `<meta name="twitter:image" content="${image}">` : ""}
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 600px;
+      margin: 40px auto;
+      padding: 20px;
+      color: #17345c;
+    }
+    img {
+      width: 100%;
+      border-radius: 12px;
+    }
+    h1 { color: #0756a5; }
+    .price { font-size: 24px; font-weight: bold; }
+  </style>
 </head>
 <body>
-<main>
-<h1>JELIMp</h1>
-<img src="${safeImage}" alt="${name}">
-<h2>${name}</h2>
-<p class="price">${price}</p>
-<p>${description}</p>
-<p>Seller: ${seller}</p>
-<p>Location: ${escapeHTML(product.location)}</p>
-<p>Discover more on JELIMp.</p>
-</main>
+  <h1>JELIMp</h1>
+  <h2>${escapeHtml(product.name)}</h2>
+  ${image ? `<img src="${image}" alt="${escapeHtml(product.name)}">` : ""}
+  <p class="price">${escapeHtml(product.price)}</p>
+  <p>${description}</p>
+  <p>Category: ${escapeHtml(product.category)}</p>
+  <p>Location: ${escapeHtml(product.location)}</p>
+  <p>Seller: ${escapeHtml(product.seller_name)}</p>
+  <p>Joining Enterprises, Linking Individuals, Markets & People.</p>
 </body>
-</html>`, { headers });
+</html>`;
+
+    return new Response(html, {
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "public, max-age=60"
+      }
+    });
+
+  } catch (error) {
+    return new Response(
+      `Unable to load product. ${String(error.message || error)}`,
+      {
+        status: 500,
+        headers: { "Content-Type": "text/plain; charset=utf-8" }
+      }
+    );
+  }
 }
